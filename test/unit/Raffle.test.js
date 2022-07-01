@@ -1,5 +1,5 @@
 const { assert, expect } = require("chai");
-const { getNamedAccounts, deployments, ethers } = require("hardhat");
+const { getNamedAccounts, deployments, ethers, network } = require("hardhat");
 const {
   developmentChains,
   networkConfig,
@@ -8,7 +8,7 @@ const {
 !developmentChains.includes(network.name)
   ? describe.skip
   : describe("Raffle", async () => {
-      let raffle, vrfCoordinatorV2Mock, raffleEntranceFee, deployer;
+      let raffle, vrfCoordinatorV2Mock, raffleEntranceFee, deployer, interval;
       const chainId = network.config.chainId;
 
       beforeEach(async () => {
@@ -20,6 +20,7 @@ const {
           deployer
         );
         raffleEntranceFee = await raffle.getEntranceFee();
+        interval = await raffle.getInterval();
       });
 
       describe("constructor", async () => {
@@ -51,6 +52,62 @@ const {
           await expect(
             raffle.enterRaffle({ value: raffleEntranceFee })
           ).to.emit(raffle, "RaffleEnter");
+        });
+
+        it("doesnt allow entrance when raffle is calculating", async () => {
+          await raffle.enterRaffle({ value: raffleEntranceFee });
+          await network.provider.send("evm_increaseTime", [
+            interval.toNumber() + 1,
+          ]);
+          await network.provider.send("evm_mine", []);
+          await raffle.performUpkeep([]);
+          await expect(
+            raffle.enterRaffle({ value: raffleEntranceFee })
+          ).to.be.revertedWith("Raffle__NotOpen");
+        });
+      });
+
+      describe("checkUpkeep", async () => {
+        it("returns false if people haven't sent any Eth", async () => {
+          await network.provider.send("evm_increaseTime", [
+            interval.toNumber() + 1,
+          ]);
+          await network.provider.send("evm_mine", []);
+          const { upkeepNeeded } = await raffle.callStatic.checkUpkeep([]);
+          assert(!upkeepNeeded);
+
+          it("returns false if raffle isn't open", async () => {
+            await raffle.enterRaffle({ value: raffleEntranceFee });
+            await netowork.provider.send("evm_increaseTime", [
+              interval.toNumber() + 1,
+            ]);
+            await network.provider.send("evm_mine", []);
+            await raffle.performUpkeep([]);
+            const raffleState = raffle.getRaffleState();
+            const { upkeepNeeded } = raffle.callStatic.checkUpkeep([]);
+            assert.equal(raffleState.toString(), "1");
+            assert.equal(upkeepNeeded, false);
+          });
+
+          it("returns false if enough time hasn't passed", async () => {
+            await raffle.enterRaffle({ value: raffleEntranceFee });
+            await network.provider.send("evm_increaseTime", [
+              interval.toNumber() - 1,
+            ]);
+            await network.provider.request({ method: "evm_mine", params: [] });
+            const { upkeepNeeded } = await raffle.callStatic.checkUpkeep("0x");
+            assert(!upkeepNeeded);
+          });
+
+          it("returns true if enough time has passed, has players, eth, and is open", async () => {
+            await raffle.enterRaffle({ value: raffleEntranceFee });
+            await network.provider.send("evm_increaseTime", [
+              interval.toNumber() + 1,
+            ]);
+            await network.provider.request({ method: "evm_mine", params: [] });
+            const { upkeepNeeded } = await raffle.callStatic.checkUpkeep("0x");
+            assert(upkeepNeeded);
+          });
         });
       });
     });
